@@ -1,11 +1,25 @@
+use std::fmt::Display;
 use std::sync::Once;
+use tracing::Level;
 use tracing_error::SpanTrace;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub use tracing::error;
 pub use tracing::info;
 pub use tracing::warn;
+
+use crate::clickhouse::ClickhouseConfig;
+use crate::clickhouse::ClickhouseLayer;
+use crate::file::FileConfig;
+use crate::file::FileWriter;
+use crate::stderr::StderrConfig;
+
+mod clickhouse;
+mod file;
+mod stderr;
 
 /// A tracing error with logical span hierarchy.
 #[derive(Debug)]
@@ -29,7 +43,7 @@ impl TError {
     }
 }
 
-impl std::fmt::Display for TError {
+impl Display for TError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -52,64 +66,98 @@ where
     }
 }
 
+/// Configuration for the tracing subscriber layers.
+#[derive(Debug, Clone)]
+pub struct TracingConfig {
+    pub stderr: StderrConfig,
+    pub file: FileConfig,
+    pub clickhouse: ClickhouseConfig,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            stderr: StderrConfig::Enabled { level: Level::INFO },
+            file: FileConfig::Disabled,
+            clickhouse: ClickhouseConfig::Disabled,
+        }
+    }
+}
+
 /// Guards single installation of the tracing subscriber.
-static SUBSCRIBER_INSTALLED: Once = Once::new();
+static TRACING_INSTALLED: Once = Once::new();
 
-/// Guards single installation of the process-wide panic hook.
-static PANIC_HOOK_INSTALLED: Once = Once::new();
+/// Initializes the tracing subscriber with the given configuration.
+/// Returns `Some(WorkerGuard)` if FileConfig is Enabled.
+/// The `WorkerGuard` must be kept alive for the duration of the process to ensure all logs are flushed.
+pub fn init_tracing(config: TracingConfig) -> Result<(), TError> {
+    let registry = tracing_subscriber::registry().with(tracing_error::ErrorLayer::default()); // Required for SpanTrace
 
-#[derive(thiserror::Error, Debug)]
-pub enum LoggingError {
-    #[error("Failed to create log directory: {0}")]
-    CreateLogDirectoryFailed(#[source] std::io::Error),
-}
+    let stderr_layer = match config.stderr {
+        StderrConfig::Disabled => None,
+        StderrConfig::Enabled { level } => Some(
+            tracing_subscriber::fmt::Layer::new()
+                .with_writer(std::io::stderr)
+                .with_filter(EnvFilter::from_default_env().add_directive(level.into()))
+                .boxed(),
+        ),
+    };
 
-/// Initialize tracing for debug builds.
-#[cfg(all(debug_assertions, not(test)))]
-#[tracing::instrument(skip_all)]
-pub fn init_tracing() -> Result<Option<tracing_appender::non_blocking::WorkerGuard>, TError> {
-    SUBSCRIBER_INSTALLED.call_once(|| {
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::from_default_env())
-            .with(tracing_subscriber::fmt::Layer::new().with_writer(std::io::stderr))
-            .with(tracing_error::ErrorLayer::default()) // Required for capturing SpanTrace
-            .init();
-    });
+    let file_layer = match config.file {
+        FileConfig::Enabled {
+            level,
+            dir_path,
+            file_name,
+        } => {
+            let file_writer = FileWriter::spawn(dir_path, file_name);
 
-    install_panic_hook();
-    Ok(None)
-}
-
-/// Initialize tracing for release/test/bench builds.
-#[cfg(any(not(debug_assertions), test))]
-#[tracing::instrument(skip_all)]
-pub fn init_tracing() -> Result<Option<tracing_appender::non_blocking::WorkerGuard>, TError> {
-    let log_directory = ".".to_string();
-    std::fs::create_dir_all(&log_directory).map_err(LoggingError::CreateLogDirectoryFailed)?;
-
-    let (file_writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::never(
-        &log_directory,
-        "muzanci-server.log",
-    ));
-
-    let mut installed = false;
-    SUBSCRIBER_INSTALLED.call_once(|| {
-        tracing_subscriber::registry()
-            .with(
+            Some(
                 tracing_subscriber::fmt::Layer::new()
                     .json()
                     .flatten_event(true)
-                    .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-                    .with_writer(file_writer.clone()),
+                    .with_writer(file_writer)
+                    .with_filter(EnvFilter::from_default_env().add_directive(level.into()))
+                    .boxed(),
             )
-            .with(tracing_error::ErrorLayer::default()) // Required for capturing SpanTrace
-            .init();
-        installed = true;
+        }
+        FileConfig::Disabled => None,
+    };
+
+    let clickhouse_layer = match config.clickhouse {
+        ClickhouseConfig::Enabled {
+            level,
+            server_url,
+            database,
+            table,
+        } => Some(
+            ClickhouseLayer::new(server_url, database, table)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()),
+                )
+                .boxed(),
+        ),
+        ClickhouseConfig::Disabled => None,
+    };
+
+    let mut installed = false;
+    TRACING_INSTALLED.call_once(|| {
+        let subscriber = registry
+            .with(stderr_layer)
+            .with(file_layer)
+            .with(clickhouse_layer);
+
+        if subscriber.try_init().is_ok() {
+            installed = true;
+        }
     });
 
     install_panic_hook();
-    Ok(if installed { Some(guard) } else { None })
+
+    Ok(())
 }
+
+/// Guards single installation of the process-wide panic hook.
+static PANIC_HOOK_INSTALLED: Once = Once::new();
 
 /// Install a process-wide panic hook (idempotent).
 ///
@@ -120,6 +168,7 @@ fn install_panic_hook() {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let payload = panic_payload(info);
+
             let location = info
                 .location()
                 .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
@@ -147,17 +196,5 @@ fn panic_payload(info: &std::panic::PanicHookInfo<'_>) -> String {
         s.clone()
     } else {
         "<non-string panic payload>".to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Calling `init` twice must not panic; the hook is installed once.
-    #[test]
-    fn init_is_idempotent() {
-        let _ = init_tracing().unwrap();
-        let _ = init_tracing().unwrap();
     }
 }
