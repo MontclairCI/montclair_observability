@@ -15,10 +15,13 @@ use crate::clickhouse::ClickhouseConfig;
 use crate::clickhouse::ClickhouseLayer;
 use crate::file::FileConfig;
 use crate::file::FileWriter;
+use crate::json_attributes::JsonAttributesCollectionLayer;
 use crate::stderr::StderrConfig;
+use crate::stderr::StderrLogFormatter;
 
 mod clickhouse;
 mod file;
+mod json_attributes;
 mod stderr;
 
 /// A tracing error with logical span hierarchy.
@@ -84,7 +87,7 @@ impl Default for TracingConfig {
     }
 }
 
-/// Guards single installation of the tracing subscriber.
+/// Guards single installation of the process-wide tracing subscriber.
 static TRACING_INSTALLED: Once = Once::new();
 
 /// Initializes the tracing subscriber with the given configuration.
@@ -97,6 +100,7 @@ pub fn init_tracing(config: TracingConfig) -> Result<(), TError> {
         StderrConfig::Disabled => None,
         StderrConfig::Enabled { level } => Some(
             tracing_subscriber::fmt::Layer::new()
+                .event_format(StderrLogFormatter)
                 .with_writer(std::io::stderr)
                 .with_filter(EnvFilter::from_default_env().add_directive(level.into()))
                 .boxed(),
@@ -142,6 +146,7 @@ pub fn init_tracing(config: TracingConfig) -> Result<(), TError> {
     let mut installed = false;
     TRACING_INSTALLED.call_once(|| {
         let subscriber = registry
+            .with(JsonAttributesCollectionLayer)
             .with(stderr_layer)
             .with(file_layer)
             .with(clickhouse_layer);
@@ -161,40 +166,28 @@ static PANIC_HOOK_INSTALLED: Once = Once::new();
 
 /// Install a process-wide panic hook (idempotent).
 ///
-/// Logs the panic via `tracing::error!` and cancels the registered
-/// cancellation token, then chains to the previous hook.
+/// Logs the panic via `tracing::error!` then calls the existing hook.
 fn install_panic_hook() {
     PANIC_HOOK_INSTALLED.call_once(|| {
-        let prev = std::panic::take_hook();
+        let next = std::panic::take_hook();
+
         std::panic::set_hook(Box::new(move |info| {
-            let payload = panic_payload(info);
+            let payload = info
+                .payload_as_str()
+                .unwrap_or("<non-string panic payload>")
+                .to_string();
 
             let location = info
                 .location()
                 .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
                 .unwrap_or_else(|| "<unknown>".to_string());
 
-            let span_trace = tracing_error::SpanTrace::capture();
-
             tracing::error!(
                 panic.payload = %payload,
                 panic.location = %location,
-                panic.span_trace = %span_trace,
             );
 
-            prev(info);
+            next(info);
         }));
     });
-}
-
-/// Extract the panic payload as a string when it is a `&str` or `String`.
-fn panic_payload(info: &std::panic::PanicHookInfo<'_>) -> String {
-    let payload = info.payload();
-    if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_string()
-    }
 }

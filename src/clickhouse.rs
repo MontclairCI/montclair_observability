@@ -6,12 +6,12 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tracing::Level;
 use tracing::Subscriber;
-use tracing::field::Field;
-use tracing::field::Visit;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 
 use crate::TError;
+use crate::json_attributes::JsonAttributes;
+use crate::json_attributes::JsonAttributesVisitor;
 
 /// Configuration for the tracing subscriber layer that writes to Clickhouse.
 #[derive(Debug, Clone)]
@@ -46,37 +46,43 @@ where
     S: Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
-        let mut attr_map = serde_json::Map::new();
+        let mut map = serde_json::Map::new();
 
         if let Some(scope) = ctx.event_scope(event) {
             for span in scope {
-                let extensions = span.extensions();
-                if let Some(cached_fields) = extensions.get::<serde_json::Map<String, Value>>() {
-                    for (k, v) in cached_fields {
-                        attr_map.insert(k.clone(), v.clone());
+                match span.extensions().get::<JsonAttributes>() {
+                    Some(span_map) => {
+                        for (k, v) in span_map {
+                            map.insert(k.clone(), v.clone());
+                        }
+                    }
+                    None => {
+                        eprintln!(
+                            "[ClickhouseLayer] Expected span extension JsonAttributes. Did you add [JsonAttributesCollectionLayer] to your tracing subscriber?"
+                        );
                     }
                 }
             }
         }
 
-        let mut visitor = EventVisitor { map: &mut attr_map };
+        let mut visitor = JsonAttributesVisitor::new(&mut map);
         event.record(&mut visitor);
 
         let level = event.metadata().level().to_string();
 
         let target = event.metadata().target().to_string();
 
-        let message = attr_map
+        let message = map
             .remove("message")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_default();
 
-        let error_span_trace = attr_map
+        let error_span_trace = map
             .remove("error.span_trace")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_default();
 
-        let attr = match serde_json::to_string(&attr_map) {
+        let attr = match serde_json::to_string(&map) {
             Ok(attr) => attr,
             Err(_) => {
                 eprintln!(
@@ -96,49 +102,6 @@ where
         };
 
         self.client_handle.blocking_send(row);
-    }
-
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        id: &tracing::span::Id,
-        ctx: Context<'_, S>,
-    ) {
-        let span = ctx.span(id).expect("Span must exist");
-        let mut map = serde_json::Map::new();
-        let mut visitor = EventVisitor { map: &mut map };
-        attrs.record(&mut visitor);
-        let mut extensions = span.extensions_mut();
-        extensions.insert(map);
-    }
-}
-
-struct EventVisitor<'a> {
-    map: &'a mut serde_json::Map<String, Value>,
-}
-
-impl Visit for EventVisitor<'_> {
-    fn record_i64(&mut self, field: &Field, value: i64) {
-        self.map
-            .insert(field.name().to_string(), Value::from(value));
-    }
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        self.map
-            .insert(field.name().to_string(), Value::from(value));
-    }
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        self.map
-            .insert(field.name().to_string(), Value::from(value));
-    }
-    fn record_str(&mut self, field: &Field, value: &str) {
-        self.map
-            .insert(field.name().to_string(), Value::from(value));
-    }
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.map.insert(
-            field.name().to_string(),
-            Value::from(format!("{:?}", value)),
-        );
     }
 }
 

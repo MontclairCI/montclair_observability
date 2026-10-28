@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use time::OffsetDateTime;
 use time::format_description;
+use time::macros::format_description;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::Level;
@@ -39,8 +40,9 @@ impl FileWriter {
             std::fs::create_dir_all(&dir_path)?;
 
             let file_path = {
-                let format = format_description::parse_borrowed::<3>("%Y-%m-%d_%H-%M-%S")?;
-                let prefix = OffsetDateTime::now_local()?.format(&format)?;
+                let ts_format =
+                    format_description!("[year]-[month]-[day]_[hour]-[minute]-[second]");
+                let prefix = OffsetDateTime::now_local()?.format(&ts_format)?;
                 dir_path.join(format!("{prefix}_{file_name}.log"))
             };
 
