@@ -84,7 +84,7 @@ where
         // Attributes
 
         for (k, v) in visitor.fields {
-            writeln!(writer, "{} = {}", k, v)?;
+            writeln!(writer, "  {} = {}", k, v)?;
         }
 
         if let Some(scope) = ctx.event_scope() {
@@ -92,7 +92,7 @@ where
                 match span.extensions().get::<JsonAttributes>() {
                     Some(span_map) => {
                         for (k, v) in span_map {
-                            writeln!(writer, "{} = {}", k, v)?;
+                            writeln!(writer, "  {} = {}", k, v)?;
                         }
                     }
                     None => {

@@ -65,7 +65,7 @@ where
             }
         }
 
-        let mut visitor = JsonAttributesVisitor::new(&mut map);
+        let mut visitor = JsonAttributesVisitor::new(None, &mut map);
         event.record(&mut visitor);
 
         let level = event.metadata().level().to_string();
