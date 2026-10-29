@@ -100,7 +100,7 @@ pub fn init_tracing(config: TracingConfig) -> Result<(), TError> {
         StderrConfig::Disabled => None,
         StderrConfig::Enabled { level } => Some(
             tracing_subscriber::fmt::Layer::new()
-                .event_format(StderrLogFormatter)
+                .event_format(StderrLogFormatter::new())
                 .with_writer(std::io::stderr)
                 .with_filter(EnvFilter::from_default_env().add_directive(level.into()))
                 .boxed(),

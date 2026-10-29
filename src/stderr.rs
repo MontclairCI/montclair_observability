@@ -27,6 +27,7 @@ impl Visit for FieldCollector {
     }
 }
 
+use std::io::IsTerminal;
 use tracing::Subscriber;
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::FormatEvent;
@@ -35,7 +36,17 @@ use tracing_subscriber::fmt::format::Writer;
 
 use crate::json_attributes::JsonAttributes;
 
-pub struct StderrLogFormatter;
+pub struct StderrLogFormatter {
+    should_use_color: bool,
+}
+
+impl StderrLogFormatter {
+    pub fn new() -> Self {
+        Self {
+            should_use_color: std::io::stderr().is_terminal(),
+        }
+    }
+}
 
 impl<S, N> FormatEvent<S, N> for StderrLogFormatter
 where
@@ -51,20 +62,38 @@ where
         // Metadata
         let meta = event.metadata();
 
+        let (c_reset, c_dim, c_grey, c_level, c_target) = if self.should_use_color {
+            (
+                "\x1b[0m",  // Reset
+                "\x1b[2m",  // Dim
+                "\x1b[90m", // Grey
+                match *meta.level() {
+                    tracing::Level::ERROR => "\x1b[1;31m", // Bold Red
+                    tracing::Level::WARN => "\x1b[1;33m",  // Bold Yellow
+                    tracing::Level::INFO => "\x1b[32m",    // Green
+                    tracing::Level::DEBUG => "\x1b[36m",   // Cyan
+                    tracing::Level::TRACE => "\x1b[35m",   // Magenta
+                },
+                "\x1b[36m", // Cyan for target
+            )
+        } else {
+            ("", "", "", "", "")
+        };
+
         let ts_format = format_description!(
             "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:6]"
         );
 
         let now_ts = OffsetDateTime::now_local().unwrap();
         let now_formatted = now_ts.format(&ts_format).unwrap();
-        write!(writer, "{} ", now_formatted)?;
+        write!(writer, "{c_grey}{}{c_reset}", now_formatted)?;
 
-        write!(writer, "{:<5} ", meta.level())?;
+        write!(writer, " {c_level}{:<5}{c_reset}", meta.level())?;
 
         let file = meta.file().unwrap_or("<unknown_file>");
         let line = meta.line().unwrap_or(0);
 
-        write!(writer, "{}:{}", file, line)?;
+        write!(writer, "{c_target}{}:{}{c_reset}", file, line)?;
 
         writeln!(writer)?;
 
@@ -76,7 +105,7 @@ where
             let (_, msg) = visitor.fields.remove(pos);
             write!(writer, "{}", msg)?;
         } else {
-            write!(writer, "Span: {}", meta.name())?;
+            write!(writer, "{c_dim}Span: {}{c_reset}", meta.name())?;
         }
 
         writeln!(writer)?;
@@ -84,7 +113,7 @@ where
         // Attributes
 
         for (k, v) in visitor.fields {
-            writeln!(writer, "  {} = {}", k, v)?;
+            writeln!(writer, "  {c_dim}{} = {}{c_reset}", k, v)?;
         }
 
         if let Some(scope) = ctx.event_scope() {
@@ -92,7 +121,7 @@ where
                 match span.extensions().get::<JsonAttributes>() {
                     Some(span_map) => {
                         for (k, v) in span_map {
-                            writeln!(writer, "  {} = {}", k, v)?;
+                            writeln!(writer, "  {c_dim}{} = {}{c_reset}", k, v)?;
                         }
                     }
                     None => {
