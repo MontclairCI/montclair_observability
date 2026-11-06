@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+zig cc \
+  -target x86_64-freebsd \
+  -L "$HOME/freebsd/amd64/15.1-RELEASE/lib" \
+  -L "$HOME/freebsd/amd64/15.1-RELEASE/usr/lib" \
+  "$@"

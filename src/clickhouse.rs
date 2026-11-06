@@ -125,25 +125,25 @@ impl ClickhouseClientHandle {
 pub struct WideEventRow {
     /// The timestamp of the event.
     #[serde(with = "clickhouse::serde::time::datetime64::millis")]
-    timestamp: OffsetDateTime,
+    pub timestamp: OffsetDateTime,
 
     /// The log level of the event.
-    level: String,
+    pub level: String,
 
     /// The name of the crate and module that generated the event.
-    target: String,
+    pub target: String,
 
     /// A human-readable message describing the event.
-    message: String,
+    pub message: String,
 
     /// The span trace collected by [`TError`].
     /// An empty string if the event is not a [`TError`].
-    error_span_trace: String,
+    pub error_span_trace: String,
 
     /// A JSON string of the event attributes.
     /// The crate `clickhouse@0.15.3` only supports inserting a JSON column from a Rust String.
     /// https://github.com/Clickhouse/clickhouse-rs/blob/dad4c6dd8a40aaeaa7534abf38155219f6fd73b5/examples/data_types_new_json.rs#L73
-    attr: String,
+    pub attr: String,
 }
 
 #[derive(Debug, thiserror::Error)]

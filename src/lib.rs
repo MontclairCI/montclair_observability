@@ -24,6 +24,8 @@ mod file;
 mod json_attributes;
 mod stderr;
 
+pub use crate::clickhouse::WideEventRow;
+
 /// A tracing error with logical span hierarchy.
 #[derive(Debug)]
 pub struct TError {
