@@ -88,7 +88,7 @@ where
         let now_formatted = now_ts.format(&ts_format).unwrap();
         write!(writer, "{c_grey}{}{c_reset}", now_formatted)?;
 
-        write!(writer, " {c_level}{:<5}{c_reset}", meta.level())?;
+        write!(writer, " {c_level}{:<5}{c_reset} ", meta.level())?;
 
         let file = meta.file().unwrap_or("<unknown_file>");
         let line = meta.line().unwrap_or(0);
@@ -109,29 +109,6 @@ where
         }
 
         writeln!(writer)?;
-
-        // Attributes
-
-        for (k, v) in visitor.fields {
-            writeln!(writer, "  {c_dim}{} = {}{c_reset}", k, v)?;
-        }
-
-        if let Some(scope) = ctx.event_scope() {
-            for span in scope {
-                match span.extensions().get::<JsonAttributes>() {
-                    Some(span_map) => {
-                        for (k, v) in span_map {
-                            writeln!(writer, "  {c_dim}{} = {}{c_reset}", k, v)?;
-                        }
-                    }
-                    None => {
-                        eprintln!(
-                            "[StderrLogFormatter] Expected span extension JsonAttributes. Did you add [JsonAttributesCollectionLayer] to your tracing subscriber?"
-                        );
-                    }
-                }
-            }
-        }
 
         Ok(())
     }

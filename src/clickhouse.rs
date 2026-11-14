@@ -1,13 +1,15 @@
 use clickhouse::Client;
 use clickhouse::Row;
 use serde::Serialize;
-use serde_json::Value;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio_util::sync::CancellationToken;
 use tracing::Level;
 use tracing::Subscriber;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
+use url::Url;
 
 use crate::TError;
 use crate::json_attributes::JsonAttributes;
@@ -20,9 +22,8 @@ pub enum ClickhouseConfig {
     Enabled {
         /// The maximum level to log. Overrides `RUST_LOG` environment variable for this layer.
         level: Level,
-        server_url: String,
-        database: String,
-        table: String,
+        url: Url,
+        shutdown: CancellationToken,
     },
 }
 
@@ -35,9 +36,9 @@ pub struct ClickhouseLayer {
 }
 
 impl ClickhouseLayer {
-    pub fn new(server_url: String, database: String, table: String) -> Self {
-        let client_handle = ClickhouseClient::spawn(server_url, database, table);
-        Self { client_handle }
+    pub async fn new(url: Url, shutdown: CancellationToken) -> Result<Self, TError> {
+        let client_handle = ClickhouseClient::spawn(url, shutdown).await?;
+        Ok(Self { client_handle })
     }
 }
 
@@ -101,7 +102,7 @@ where
             attr,
         };
 
-        self.client_handle.blocking_send(row);
+        self.client_handle.try_send(row);
     }
 }
 
@@ -112,11 +113,15 @@ struct ClickhouseClientHandle {
 }
 
 impl ClickhouseClientHandle {
-    fn blocking_send(&self, row: WideEventRow) {
-        if self.tx.blocking_send(row).is_err() {
-            eprintln!(
-                "[ClickhouseClientHandle::blocking_send] Failed to send wide event row: channel receiver dropped"
-            );
+    fn try_send(&self, row: WideEventRow) {
+        match self.tx.try_send(row) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                eprintln!("[ClickhouseClientHandle::try_send] Failed to send: channel full");
+            }
+            Err(TrySendError::Closed(_)) => {
+                eprintln!("[ClickhouseClientHandle::try_send] Failed to send: channel closed");
+            }
         }
     }
 }
@@ -153,32 +158,55 @@ struct ClickhouseClientError(String);
 /// An actor that spawns a task to receive events from other tasks, batch events, and send to Clickhouse.
 struct ClickhouseClient {
     client: clickhouse::Client,
-    table: String,
     rx: mpsc::Receiver<WideEventRow>,
 }
 
 impl ClickhouseClient {
-    fn spawn(server_url: String, database: String, table: String) -> ClickhouseClientHandle {
-        let (tx, rx) = mpsc::channel(1024);
+    async fn spawn(
+        url: Url,
+        shutdown: CancellationToken,
+    ) -> Result<ClickhouseClientHandle, TError> {
+        let (tx, rx) = mpsc::channel(512);
 
         let client = Client::default()
-            .with_url(server_url)
-            .with_database(database);
+            .with_url(url)
+            // Enable inserting JSON columns as a string
+            .with_setting("input_format_binary_read_json_as_string", "1")
+            // Enable selecting JSON columns as a string
+            .with_setting("output_format_binary_write_json_as_string", "1");
 
-        tokio::spawn(async move { ClickhouseClient { client, table, rx }.main().await });
+        // TODO: Insert a test row into the "event" table to validate table and column existence.
+        client
+            .query("SELECT 1")
+            .fetch_one::<u8>()
+            .await
+            .map_err(|e| {
+                ClickhouseClientError(format!(
+                    "Clickhouse client configuration check failed: {e:?}"
+                ))
+            })?;
 
-        ClickhouseClientHandle { tx }
+        tokio::spawn(async move { ClickhouseClient { client, rx }.main(shutdown).await });
+
+        Ok(ClickhouseClientHandle { tx })
     }
 
-    async fn main(mut self) -> Result<(), TError> {
-        let mut batch = Vec::with_capacity(500);
+    async fn main(mut self, shutdown: CancellationToken) {
+        if let Err(e) = self.run().await {
+            eprintln!("ClickhouseClient: error: {}", e);
+            shutdown.cancel();
+        }
+    }
+
+    async fn run(&mut self) -> Result<(), TError> {
+        let mut batch = Vec::with_capacity(256);
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
 
         loop {
             tokio::select! {
                 Some(row) = self.rx.recv() => {
                     batch.push(row);
-                    if batch.len() >= 500 {
+                    if batch.len() >= 256 {
                         self.flush_batch(&batch).await?;
                         batch.clear();
                     }
@@ -195,7 +223,7 @@ impl ClickhouseClient {
     }
 
     async fn flush_batch(&mut self, batch: &[WideEventRow]) -> Result<(), ClickhouseClientError> {
-        let mut inserter = match self.client.insert::<WideEventRow>(&self.table).await {
+        let mut inserter = match self.client.insert::<WideEventRow>("event").await {
             Ok(inserter) => inserter,
             Err(e) => {
                 let e = ClickhouseClientError(format!(

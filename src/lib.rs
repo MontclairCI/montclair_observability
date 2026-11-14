@@ -11,7 +11,6 @@ pub use tracing::error;
 pub use tracing::info;
 pub use tracing::warn;
 
-use crate::clickhouse::ClickhouseConfig;
 use crate::clickhouse::ClickhouseLayer;
 use crate::file::FileConfig;
 use crate::file::FileWriter;
@@ -24,6 +23,7 @@ mod file;
 mod json_attributes;
 mod stderr;
 
+pub use crate::clickhouse::ClickhouseConfig;
 pub use crate::clickhouse::WideEventRow;
 
 /// A tracing error with logical span hierarchy.
@@ -95,7 +95,7 @@ static TRACING_INSTALLED: Once = Once::new();
 /// Initializes the tracing subscriber with the given configuration.
 /// Returns `Some(WorkerGuard)` if FileConfig is Enabled.
 /// The `WorkerGuard` must be kept alive for the duration of the process to ensure all logs are flushed.
-pub fn init_tracing(config: TracingConfig) -> Result<(), TError> {
+pub async fn init_tracing(config: TracingConfig) -> Result<(), TError> {
     let registry = tracing_subscriber::registry().with(tracing_error::ErrorLayer::default()); // Required for SpanTrace
 
     let stderr_layer = match config.stderr {
@@ -132,11 +132,11 @@ pub fn init_tracing(config: TracingConfig) -> Result<(), TError> {
     let clickhouse_layer = match config.clickhouse {
         ClickhouseConfig::Enabled {
             level,
-            server_url,
-            database,
-            table,
+            url,
+            shutdown,
         } => Some(
-            ClickhouseLayer::new(server_url, database, table)
+            ClickhouseLayer::new(url, shutdown)
+                .await?
                 .with_filter(
                     tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()),
                 )

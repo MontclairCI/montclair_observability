@@ -7,12 +7,11 @@ async fn main() {
     eprintln!("Creating client");
 
     let server_url = "http://localhost:8123";
-    let database = "muzanci_observability";
     let client = clickhouse::Client::default()
         .with_url(server_url)
         .with_user("default")
-        .with_password("muzanci_observability")
-        .with_database(database)
+        .with_password("clickhouse_password")
+        .with_database("default")
         // Enable inserting JSON columns as a string
         .with_setting("input_format_binary_read_json_as_string", "1")
         // Enable selecting JSON columns as a string
@@ -23,7 +22,7 @@ async fn main() {
         .query(
             r#"
             CREATE DATABASE IF NOT EXISTS
-                muzanci_observability;
+                "muzanci_observability";
             "#,
         )
         .execute()
