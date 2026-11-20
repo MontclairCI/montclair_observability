@@ -1,5 +1,5 @@
 [package]
-name = "muzanci-observability"
+name = "montclair_observability"
 version = "0.1.0"
 edition = "2024"
 
@@ -20,7 +20,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
 
 [lib]
-name = "muzanci_observability"
+name = "montclair_observability"
 path = "src/lib.rs"
 
 [[bin]]

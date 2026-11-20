@@ -22,6 +22,9 @@ pub enum ClickhouseConfig {
     Enabled {
         /// The maximum level to log. Overrides `RUST_LOG` environment variable for this layer.
         level: Level,
+        username: String,
+        password: String,
+        database: String,
         url: Url,
         shutdown: CancellationToken,
     },
@@ -36,8 +39,15 @@ pub struct ClickhouseLayer {
 }
 
 impl ClickhouseLayer {
-    pub async fn new(url: Url, shutdown: CancellationToken) -> Result<Self, TError> {
-        let client_handle = ClickhouseClient::spawn(url, shutdown).await?;
+    pub async fn new(
+        username: &str,
+        password: &str,
+        database: &str,
+        url: &Url,
+        shutdown: CancellationToken,
+    ) -> Result<Self, TError> {
+        let client_handle =
+            ClickhouseClient::spawn(username, password, database, url, shutdown).await?;
         Ok(Self { client_handle })
     }
 }
@@ -163,13 +173,19 @@ struct ClickhouseClient {
 
 impl ClickhouseClient {
     async fn spawn(
-        url: Url,
+        username: &str,
+        password: &str,
+        database: &str,
+        url: &Url,
         shutdown: CancellationToken,
     ) -> Result<ClickhouseClientHandle, TError> {
         let (tx, rx) = mpsc::channel(512);
 
         let client = Client::default()
-            .with_url(url)
+            .with_user(username)
+            .with_password(password)
+            .with_database(database)
+            .with_url(url.as_str())
             // Enable inserting JSON columns as a string
             .with_setting("input_format_binary_read_json_as_string", "1")
             // Enable selecting JSON columns as a string

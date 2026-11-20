@@ -132,10 +132,13 @@ pub async fn init_tracing(config: TracingConfig) -> Result<(), TError> {
     let clickhouse_layer = match config.clickhouse {
         ClickhouseConfig::Enabled {
             level,
+            username,
+            password,
+            database,
             url,
             shutdown,
         } => Some(
-            ClickhouseLayer::new(url, shutdown)
+            ClickhouseLayer::new(&username, &password, &database, &url, shutdown)
                 .await?
                 .with_filter(
                     tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()),

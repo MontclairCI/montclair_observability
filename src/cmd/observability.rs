@@ -1,4 +1,4 @@
-use muzanci_observability::WideEventRow;
+use montclair_observability::WideEventRow;
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -10,7 +10,7 @@ async fn main() {
     let client = clickhouse::Client::default()
         .with_url(server_url)
         .with_user("default")
-        .with_password("clickhouse_password")
+        .with_password("password")
         .with_database("default")
         // Enable inserting JSON columns as a string
         .with_setting("input_format_binary_read_json_as_string", "1")
@@ -22,7 +22,7 @@ async fn main() {
         .query(
             r#"
             CREATE DATABASE IF NOT EXISTS
-                "muzanci_observability";
+                "montclair_observability";
             "#,
         )
         .execute()
@@ -34,7 +34,7 @@ async fn main() {
         .query(
             r#"
             CREATE TABLE IF NOT EXISTS
-                "muzanci_observability"."event" (
+                "montclair_observability"."event" (
                     "timestamp" DateTime64(3),
                     "level" LowCardinality(String),
                     "target" String,
@@ -58,11 +58,11 @@ async fn main() {
         .query(
             r#"
             CREATE USER IF NOT EXISTS
-                "muzanci_observability_writer"
+                "montclair_observability_writer"
             IDENTIFIED WITH
                 sha256_password
             BY
-                'muzanci_observability'
+                'montclair_observability'
             ;
             "#,
         )
@@ -78,9 +78,9 @@ async fn main() {
                 INSERT,
                 SELECT
             ON
-                "muzanci_observability"."event"
+                "montclair_observability"."event"
             TO
-                "muzanci_observability_writer"
+                "montclair_observability_writer"
             ;
             "#,
         )
@@ -89,6 +89,7 @@ async fn main() {
         .unwrap();
 
     eprintln!("Starting insert");
+    let client = client.with_database("montclair_observability");
     let mut inserter = client.insert::<WideEventRow>("event").await.unwrap();
 
     #[derive(Serialize)]
